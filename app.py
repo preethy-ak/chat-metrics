@@ -572,6 +572,19 @@ def load_tc_usage(file) -> pd.DataFrame:
 #       until the separate "TC usage data" is supplied. The scorecard renders
 #       these as "Pending*" rather than a misleading 0 or blank.
 
+def _round2(df: pd.DataFrame) -> pd.DataFrame:
+    """Round every float column to 2 decimal places — applied to every table
+    just before it's returned for display/export, so numbers read cleanly
+    (e.g. '94.5155' -> '94.52', '33829.000' -> '33829.0') without touching the
+    full-precision values used internally for further calculations."""
+    if df.empty:
+        return df
+    df = df.copy()
+    float_cols = df.select_dtypes(include=["float64", "float32"]).columns
+    df[float_cols] = df[float_cols].round(2)
+    return df
+
+
 def _weighted_avg(values, weights):
     values = np.asarray(values, dtype=float)
     weights = np.asarray(weights, dtype=float)
@@ -617,7 +630,7 @@ def _period_summary(df: pd.DataFrame, period_col: str) -> pd.DataFrame:
     out = pd.DataFrame(rows).sort_values("Period").reset_index(drop=True)
     for col in ["Total Conversations", "CRR %", "CRT (min)", "CSAT %"]:
         out[f"{col} MoM Δ"] = out[col].diff()
-    return out
+    return _round2(out)
 
 
 def mom_summary(df: pd.DataFrame) -> pd.DataFrame:
@@ -655,7 +668,7 @@ def group_performance(df: pd.DataFrame, group_col: str, label: str) -> pd.DataFr
             "Guided Revenue (USD)": float(g["guided_revenue_usd"].sum(skipna=True)) if "guided_revenue_usd" in g.columns else float(g["guided_revenue"].sum(skipna=True)),
         })
     out = pd.DataFrame(rows).sort_values("Total Conversations", ascending=False).reset_index(drop=True)
-    return out
+    return _round2(out)
 
 
 def merchant_performance(df: pd.DataFrame) -> pd.DataFrame:
@@ -708,7 +721,7 @@ def tc_usage_by_merchant(tc_df: pd.DataFrame) -> pd.DataFrame:
     ).reset_index()
     total = g["tc_reply_count"] + g["mp_reply_count"]
     g["TC Reply %"] = np.where(total > 0, g["tc_reply_count"] / total * 100, np.nan)
-    return g.rename(columns={"tc_reply_count": "TC Replies", "mp_reply_count": "MP Replies"})
+    return _round2(g.rename(columns={"tc_reply_count": "TC Replies", "mp_reply_count": "MP Replies"}))
 
 
 def merchant_performance_with_tc(df: pd.DataFrame, tc_df: pd.DataFrame) -> pd.DataFrame:
@@ -718,7 +731,7 @@ def merchant_performance_with_tc(df: pd.DataFrame, tc_df: pd.DataFrame) -> pd.Da
     if perf.empty or tc_df is None or tc_df.empty:
         return perf
     tc = tc_usage_by_merchant(tc_df).rename(columns={"merchant_id": "Merchant / Seller ID"})
-    return perf.merge(tc, on="Merchant / Seller ID", how="left")
+    return _round2(perf.merge(tc, on="Merchant / Seller ID", how="left"))
 
 
 def seller_performance_with_tc(df: pd.DataFrame, tc_df: pd.DataFrame) -> pd.DataFrame:
@@ -746,7 +759,7 @@ def seller_performance_with_tc(df: pd.DataFrame, tc_df: pd.DataFrame) -> pd.Data
     total = g["tc_reply_count"] + g["mp_reply_count"]
     g["TC Reply %"] = np.where(total > 0, g["tc_reply_count"] / total * 100, np.nan)
     g = g.rename(columns={"bx_name": "Seller (BX Name)", "tc_reply_count": "TC Replies", "mp_reply_count": "MP Replies"})
-    return perf.merge(g, on="Seller (BX Name)", how="left")
+    return _round2(perf.merge(g, on="Seller (BX Name)", how="left"))
 
 
 # ============================================================================
@@ -1029,7 +1042,7 @@ tc_data_loaded = tc_usage_upload is not None and not tc_usage_df_all.empty
 
 
 def fmt_pct(v):
-    return "N/A" if v is None or (isinstance(v, float) and np.isnan(v)) else f"{v:.1f}%"
+    return "N/A" if v is None or (isinstance(v, float) and np.isnan(v)) else f"{v:.2f}%"
 
 
 def fmt_num(v):
@@ -1037,7 +1050,7 @@ def fmt_num(v):
 
 
 def fmt_min(v):
-    return "N/A" if v is None or (isinstance(v, float) and np.isnan(v)) else f"{v:.1f} min"
+    return "N/A" if v is None or (isinstance(v, float) and np.isnan(v)) else f"{v:.2f} min"
 
 
 def fmt_tc(v):
@@ -1146,7 +1159,7 @@ with t1:
 with t2:
     st.dataframe(wow_summary(df), use_container_width=True, hide_index=True)
 with t3:
-    st.dataframe(merchant_performance_with_tc(df, tc_usage_df), use_container_width=True, hide_index=True)
+    st.dataframe(seller_performance_with_tc(df, tc_usage_df), use_container_width=True, hide_index=True)
 
 st.divider()
 
@@ -1163,7 +1176,7 @@ with col_a:
     st.write("**Filtered data** (matches current filters above)")
     st.download_button(
         "Download filtered data (CSV)",
-        data=df.to_csv(index=False).encode("utf-8"),
+        data=_round2(df).to_csv(index=False).encode("utf-8"),
         file_name=f"tc_chat_filtered_{datetime.now():%Y%m%d}.csv",
         mime="text/csv",
     )
@@ -1174,7 +1187,7 @@ with col_b:
     def build_full_report(all_df: pd.DataFrame, all_tc_df: pd.DataFrame) -> bytes:
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-            all_df.to_excel(writer, sheet_name="Raw Data (Combined)", index=False)
+            _round2(all_df).to_excel(writer, sheet_name="Raw Data (Combined)", index=False)
             mom_summary(all_df).to_excel(writer, sheet_name="MoM Summary", index=False)
             wow_summary(all_df).to_excel(writer, sheet_name="WoW Summary", index=False)
             merchant_performance_with_tc(all_df, all_tc_df).to_excel(writer, sheet_name="Merchant-Seller ID Wise", index=False)
@@ -1182,7 +1195,7 @@ with col_b:
             store_performance(all_df).to_excel(writer, sheet_name="Store Wise", index=False)
             platform_performance(all_df).to_excel(writer, sheet_name="Platform Wise", index=False)
             if all_tc_df is not None and not all_tc_df.empty:
-                all_tc_df.to_excel(writer, sheet_name="TC Usage Data (Raw)", index=False)
+                _round2(all_tc_df).to_excel(writer, sheet_name="TC Usage Data (Raw)", index=False)
         return buf.getvalue()
 
     st.download_button(
