@@ -107,15 +107,15 @@ Still needs your input before the email feature is real:
    CRR/CRT differently (e.g. CRR should include a holiday-mode adjustment
    from Lazada's "Response Rate (Holiday Mode)" column), flag it — it's a
    small change in Section 2 of `app.py`.
-4. **"Seller-wise" vs "Merchant ID-wise."** In the source data, "Seller ID"
-   and "Merchant ID" are literally the same field (confirmed via the `tiktok
-   dksh TH data` sheet, which labels it "Seller ID" using the same codes as
-   "Merchant ID" elsewhere). To make the two requested views actually
-   different, "Seller-wise Performance" is grouped by the **Graas BX
-   executive** (`bx_name`) managing the account, while "Merchant ID-wise
-   Performance" is grouped by the **Merchant ID**. If you intended something
-   else by "Seller ID," say so — it's a one-line change
-   (`seller_performance()` in Section 2 of `app.py`).
+4. **"BX Performance" vs "Merchant ID-wise."** In the source data, "Seller
+   ID" and "Merchant ID" are literally the same field (confirmed via the
+   `tiktok dksh TH data` sheet, which labels it "Seller ID" using the same
+   codes as "Merchant ID" elsewhere). So the tab originally called
+   "Seller-wise Performance (BX)" was renamed to **BX Performance** — it's
+   grouped by the **Graas BX team member** (`bx_name`) managing the account,
+   i.e. BX team member performance, not a seller-level cut (that would be
+   identical to Merchant ID-wise, since Seller ID = Merchant ID here). It's
+   `bx_performance()` in Section 2 of `app.py`.
 5. Neither the SQL you mentioned nor a sample "chat monitor" Streamlit app
    came through as attachments — this was built from the structure of the
    three uploaded trackers instead. If you still want to share either, I can
@@ -143,9 +143,8 @@ Once uploaded, it feeds:
   is looser than the tracker data's).
 - A **TC Replies / MP Replies / Total Seller Replies / TC Reply %** breakdown
   merged into the **Merchant ID-wise Performance** table (direct match on
-  Merchant ID) and the **Seller-wise Performance (BX)** table (via a
-  Merchant ID → BX executive lookup built from the currently-loaded tracker
-  data).
+  Merchant ID) and the **BX Performance** table (via a Merchant ID → BX team
+  member lookup built from the currently-loaded tracker data).
 - A **"TC Usage Data (Raw)"** sheet in the complete Excel report download.
 
 If a merchant appears in the trackers but not in the TC usage file (or vice
@@ -195,8 +194,13 @@ themselves — these are handled automatically, but worth knowing about:
   in USD — see "Guided Revenue currency conversion" above.
 - **"Seller ID-wise Performance" tab was showing Merchant-ID data.** Under
   Summary Tables, that tab was wired to the same table as "Merchant ID-wise
-  Performance" instead of the BX-executive grouping — fixed so it now shows
-  Seller (BX Name) rows as labeled.
+  Performance" instead of the BX grouping — fixed so it now shows BX rows as
+  labeled.
+- **"Seller-wise" was a misleading name.** This view is grouped by Graas BX
+  team member, not by seller — every tab, table header, and the Excel sheet
+  name have been renamed to **BX Performance** / **BX Name** throughout to
+  avoid confusion with an actual seller-level cut (which, per point 4 above,
+  would be identical to Merchant ID-wise in this data anyway).
 
 ## Why Total Conversations can look much smaller than Total TC/MP Replies
 
