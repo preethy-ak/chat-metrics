@@ -1078,7 +1078,11 @@ if tc_data_loaded:
         "TC/MP reply metrics are from the uploaded TC Usage Summary, filtered to the "
         "current date range and Merchant ID/Seller ID selection (the Platform and Store "
         "filters don't apply to this file — see the sidebar note). "
-        "CSAT excludes Lazada rows (no CSAT field in that export)."
+        "CSAT excludes Lazada rows (no CSAT field in that export). "
+        "Note: Total TC/MP Replies count individual reply *messages*, while Total "
+        "Conversations counts chat *threads* — a single conversation typically contains "
+        "several reply messages, so the reply totals are naturally several times larger "
+        "than Total Conversations. This isn't a data error; they're measuring different things."
     )
 else:
     st.caption(
