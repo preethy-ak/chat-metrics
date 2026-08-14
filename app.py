@@ -1002,6 +1002,9 @@ merchant_sel = st.sidebar.multiselect("Merchant ID / Seller ID", merchant_opts, 
 store_opts = sorted(df_all["store_name"].dropna().unique().tolist())
 store_sel = st.sidebar.multiselect("Store", store_opts, default=[])
 
+country_opts = sorted(df_all["country"].dropna().unique().tolist())
+country_sel = st.sidebar.multiselect("Country", country_opts, default=[])
+
 mask = (
     (df_all["date"].dt.date >= start_date)
     & (df_all["date"].dt.date <= end_date)
@@ -1011,12 +1014,15 @@ if merchant_sel:
     mask &= df_all["merchant_id"].isin(merchant_sel)
 if store_sel:
     mask &= df_all["store_name"].isin(store_sel)
+if country_sel:
+    mask &= df_all["country"].isin(country_sel)
 
 df = df_all[mask].copy()
 
 # TC usage is filtered by date range + merchant selection only (it has no
-# store_name / tracker-platform field of its own to match the Store filter
-# against — its "platform" is derived from CHANNEL and is looser).
+# store_name / country / tracker-platform field of its own to match the
+# Store/Country filters against — its "platform" is derived from CHANNEL and
+# is looser).
 if not tc_usage_df_all.empty:
     tc_mask = (
         (tc_usage_df_all["date"].dt.date >= start_date)
@@ -1071,30 +1077,27 @@ def fmt_tc_pct(v):
 
 
 row1 = st.columns(4)
-row1[0].metric("Total Conversations", fmt_num(sc["total_conversations"]))
-row1[1].metric("Total TC Replies", fmt_tc(tc_sc["total_tc_replies"]))
-row1[2].metric("Total MP Replies", fmt_tc(tc_sc["total_mp_replies"]))
-row1[3].metric("Total Seller Replies", fmt_tc(tc_sc["total_seller_replies"]))
+row1[0].metric("Total TC Replies", fmt_tc(tc_sc["total_tc_replies"]))
+row1[1].metric("Total MP Replies", fmt_tc(tc_sc["total_mp_replies"]))
+row1[2].metric("Total Seller Replies", fmt_tc(tc_sc["total_seller_replies"]))
+row1[3].metric("TC Reply %", fmt_tc_pct(tc_sc["tc_reply_pct"]))
 
 row2 = st.columns(4)
-row2[0].metric("TC Reply %", fmt_tc_pct(tc_sc["tc_reply_pct"]))
-row2[1].metric("MP Reply %", fmt_tc_pct(tc_sc["mp_reply_pct"]))
-row2[2].metric("CRR (Response Rate)", fmt_pct(sc["crr_pct"]))
-row2[3].metric("CRT (Response Time)", fmt_min(sc["crt_min"]))
-
-row3 = st.columns(4)
-row3[0].metric("CSAT", fmt_pct(sc["csat_pct"]) if not df["csat_pct"].dropna().empty else "N/A")
+row2[0].metric("MP Reply %", fmt_tc_pct(tc_sc["mp_reply_pct"]))
+row2[1].metric("CRR (Response Rate)", fmt_pct(sc["crr_pct"]))
+row2[2].metric("CRT (Response Time)", fmt_min(sc["crt_min"]))
+row2[3].metric("CSAT", fmt_pct(sc["csat_pct"]) if not df["csat_pct"].dropna().empty else "N/A")
 
 if tc_data_loaded:
     st.caption(
         "TC/MP reply metrics are from the uploaded TC Usage Summary, filtered to the "
-        "current date range and Merchant ID/Seller ID selection (the Platform and Store "
-        "filters don't apply to this file — see the sidebar note). "
+        "current date range and Merchant ID/Seller ID selection (the Platform, Store, and "
+        "Country filters don't apply to this file — see the sidebar note). "
         "CSAT excludes Lazada rows (no CSAT field in that export). "
-        "Note: Total TC/MP Replies count individual reply *messages*, while Total "
-        "Conversations counts chat *threads* — a single conversation typically contains "
-        "several reply messages, so the reply totals are naturally several times larger "
-        "than Total Conversations. This isn't a data error; they're measuring different things."
+        "Note: TC/MP Replies (and Total Seller Replies) count individual reply *messages*, "
+        "not conversations — a single conversation typically contains several reply "
+        "messages, so these totals naturally run several times higher than a conversation "
+        "count would."
     )
 else:
     st.caption(
