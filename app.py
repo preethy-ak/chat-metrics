@@ -675,11 +675,13 @@ def merchant_performance(df: pd.DataFrame) -> pd.DataFrame:
     return group_performance(df, "merchant_id", "Merchant / Seller ID")
 
 
-def seller_performance(df: pd.DataFrame) -> pd.DataFrame:
-    """'Seller-wise' is interpreted here as the Graas BX executive managing the
-    account (bx_name) — a distinct cut from Merchant ID, since in this data
-    'Seller ID' and 'Merchant ID' are the same field."""
-    return group_performance(df, "bx_name", "Seller (BX Name)")
+def bx_performance(df: pd.DataFrame) -> pd.DataFrame:
+    """Performance grouped by the Graas BX (team member) managing the account
+    (bx_name) — this is BX team member performance, not a "seller" cut. (In
+    this data, "Seller ID" and "Merchant ID" are literally the same field, so
+    a separate seller-level grouping wouldn't add anything beyond Merchant
+    ID-wise performance anyway.)"""
+    return group_performance(df, "bx_name", "BX Name")
 
 
 def store_performance(df: pd.DataFrame) -> pd.DataFrame:
@@ -742,12 +744,12 @@ def merchant_performance_with_tc(df: pd.DataFrame, tc_df: pd.DataFrame) -> pd.Da
     return _round2(perf.merge(tc, on="Merchant / Seller ID", how="left"))
 
 
-def seller_performance_with_tc(df: pd.DataFrame, tc_df: pd.DataFrame) -> pd.DataFrame:
-    """Seller-wise (BX) performance, with TC/MP reply columns merged in via a
+def bx_performance_with_tc(df: pd.DataFrame, tc_df: pd.DataFrame) -> pd.DataFrame:
+    """BX team member performance, with TC/MP reply columns merged in via a
     merchant_id -> bx_name lookup built from the currently-filtered main data
     (each merchant's most common BX in view). No-op if no TC usage file, or
     if none of its merchant IDs match a BX in the current view."""
-    perf = seller_performance(df)
+    perf = bx_performance(df)
     if perf.empty or tc_df is None or tc_df.empty:
         return perf
     mapping = (
@@ -767,8 +769,8 @@ def seller_performance_with_tc(df: pd.DataFrame, tc_df: pd.DataFrame) -> pd.Data
     total = g["tc_reply_count"] + g["mp_reply_count"]
     g["Total Seller Replies"] = total
     g["TC Reply %"] = np.where(total > 0, g["tc_reply_count"] / total * 100, np.nan)
-    g = g.rename(columns={"bx_name": "Seller (BX Name)", "tc_reply_count": "TC Replies", "mp_reply_count": "MP Replies"})
-    return _round2(perf.merge(g, on="Seller (BX Name)", how="left"))
+    g = g.rename(columns={"bx_name": "BX Name", "tc_reply_count": "TC Replies", "mp_reply_count": "MP Replies"})
+    return _round2(perf.merge(g, on="BX Name", how="left"))
 
 
 # ============================================================================
@@ -913,7 +915,7 @@ tiktok_upload = st.sidebar.file_uploader("TikTok Performance Tracker (.xlsx)", t
 st.sidebar.divider()
 st.sidebar.caption(
     "Optional: adds Total TC Replies / MP Replies / TC Reply % / MP Reply % "
-    "to the scorecard and the Merchant ID-wise / Seller-wise tables."
+    "to the scorecard and the Merchant ID-wise / BX Performance tables."
 )
 tc_usage_upload = st.sidebar.file_uploader(
     "TC Usage Summary (.csv or .xlsx)", type=["csv", "xlsx"], key="tc_usage"
@@ -1109,11 +1111,11 @@ st.divider()
 
 
 # --------------------------------------------------------------------------
-# Views: Overall / Merchant ID-wise / Seller-wise
+# Views: Overall / Merchant ID-wise / BX Performance
 # --------------------------------------------------------------------------
 
 tab_overall, tab_merchant, tab_seller = st.tabs([
-    "Overall Performance", "Merchant ID-wise Performance", "Seller-wise Performance (BX)"
+    "Overall Performance", "Merchant ID-wise Performance", "BX Performance"
 ])
 
 with tab_overall:
@@ -1156,12 +1158,13 @@ with tab_merchant:
 
 with tab_seller:
     st.caption(
-        "Grouped by the Graas BX executive managing the account (bx_name), since "
-        "'Seller ID' and 'Merchant ID' refer to the same field in this data. "
-        "If you'd rather this tab be identical to Merchant ID-wise, let me know."
+        "BX team member performance — grouped by the Graas BX executive managing "
+        "the account (bx_name), not by seller/merchant ('Seller ID' and 'Merchant "
+        "ID' refer to the same field in this data, so that cut lives in the "
+        "Merchant ID-wise tab instead)."
     )
-    st.subheader("Seller-wise performance")
-    st.dataframe(seller_performance_with_tc(df, tc_usage_df), use_container_width=True, hide_index=True)
+    st.subheader("BX performance")
+    st.dataframe(bx_performance_with_tc(df, tc_usage_df), use_container_width=True, hide_index=True)
 
 st.divider()
 
@@ -1172,13 +1175,13 @@ st.divider()
 
 st.header("Summary Tables")
 
-t1, t2, t3 = st.tabs(["Month-on-Month (MoM)", "Week-on-Week (WoW)", "Seller ID-wise Performance"])
+t1, t2, t3 = st.tabs(["Month-on-Month (MoM)", "Week-on-Week (WoW)", "BX Performance"])
 with t1:
     st.dataframe(mom_summary(df), use_container_width=True, hide_index=True)
 with t2:
     st.dataframe(wow_summary(df), use_container_width=True, hide_index=True)
 with t3:
-    st.dataframe(seller_performance_with_tc(df, tc_usage_df), use_container_width=True, hide_index=True)
+    st.dataframe(bx_performance_with_tc(df, tc_usage_df), use_container_width=True, hide_index=True)
 
 st.divider()
 
@@ -1210,7 +1213,7 @@ with col_b:
             mom_summary(all_df).to_excel(writer, sheet_name="MoM Summary", index=False)
             wow_summary(all_df).to_excel(writer, sheet_name="WoW Summary", index=False)
             merchant_performance_with_tc(all_df, all_tc_df).to_excel(writer, sheet_name="Merchant-Seller ID Wise", index=False)
-            seller_performance_with_tc(all_df, all_tc_df).to_excel(writer, sheet_name="Seller (BX) Wise", index=False)
+            bx_performance_with_tc(all_df, all_tc_df).to_excel(writer, sheet_name="BX Performance", index=False)
             store_performance(all_df).to_excel(writer, sheet_name="Store Wise", index=False)
             platform_performance(all_df).to_excel(writer, sheet_name="Platform Wise", index=False)
             if all_tc_df is not None and not all_tc_df.empty:
