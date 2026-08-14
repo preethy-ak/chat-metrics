@@ -455,6 +455,99 @@ def load_all(lazada_file=None, shopee_file=None, tiktok_file=None) -> pd.DataFra
     return df
 
 
+# --------------------------------------------------------------------------
+# Currency conversion: Guided Revenue is recorded per-row in each country's
+# local currency (SGD, MYR, THB, PHP) — summing it directly across countries
+# (e.g. an Overall or Merchant-wise total for a merchant selling in multiple
+# countries) mixes currencies together, which isn't a meaningful number. This
+# converts every row to USD using the country -> currency map below and the
+# FX rates set in the sidebar, so revenue totals are apples-to-apples.
+# --------------------------------------------------------------------------
+
+CURRENCY_BY_COUNTRY = {"SG": "SGD", "MY": "MYR", "TH": "THB", "PH": "PHP", "ID": "IDR"}
+
+# Approximate defaults — these move with the market, so they're editable in
+# the sidebar rather than trusted as-is. Local currency units per 1 USD.
+# NOTE: any country code that shows up in your data but isn't in
+# CURRENCY_BY_COUNTRY above falls back to being treated as already-USD (rate
+# 1.0) — i.e. NOT converted. That's silently wrong for a large-denomination
+# currency (this bit us once already with Indonesia/IDR, whose raw guided
+# revenue numbers are so large they looked like real USD until "ID" was added
+# above). If you add sales in a new country, add its currency here too.
+DEFAULT_FX_TO_USD = {"SGD": 1.34, "MYR": 4.70, "THB": 34.50, "PHP": 58.50, "IDR": 15800.0, "USD": 1.0}
+
+
+def add_usd_conversion(df: pd.DataFrame, fx_rates: dict) -> pd.DataFrame:
+    """Adds 'currency' (derived from country) and 'guided_revenue_usd' columns."""
+    df = df.copy()
+    currency = df["country"].map(CURRENCY_BY_COUNTRY).fillna("USD")
+    rate = currency.map(fx_rates).fillna(1.0)
+    df["currency"] = currency
+    df["guided_revenue_usd"] = df["guided_revenue"] / rate
+    return df
+
+
+# --------------------------------------------------------------------------
+# TC Usage Summary: a separate upload (from SQL Lab / your database) that
+# breaks out TC (Graas team) vs MP (merchant's own staff) reply counts —
+# neither the Lazada/Shopee/TikTok trackers above have this split. Accepts
+# either of the two sample schemas provided:
+#   - sqllab_tc_chat_usage: MERCHANT_ID, LOG_DATE, CHANNEL, BUYER_MESSAGE_COUNT,
+#     MP_REPLY_COUNT, TC_REPLY_COUNT, TOTAL_SELLER_REPLY_COUNT, TC_REPLY_PCT
+#   - tc_chat_filtered_data: the same core columns plus extra context
+#     (SELLER_ID, STORE_CODE, CRR_PERCENT, AVG_CSAT, AVG_CRT_MINS, ...) — the
+#     extra columns are read but not currently used elsewhere in the app.
+# --------------------------------------------------------------------------
+
+CHANNEL_PLATFORM_PREFIXES = {"lazada": "Lazada", "shopee": "Shopee", "tiktok": "TikTok"}
+
+
+def _channel_to_platform(channel):
+    """'shopee-12' -> 'Shopee'. Returns None for missing/unknown channels."""
+    if pd.isna(channel):
+        return None
+    ch = str(channel).strip()
+    if not ch or ch.lower() == "unknown":
+        return None
+    prefix = ch.split("-")[0].strip().lower()
+    return CHANNEL_PLATFORM_PREFIXES.get(prefix)
+
+
+def load_tc_usage(file) -> pd.DataFrame:
+    """Normalizes a TC usage summary export into: merchant_id, date, channel,
+    platform, tc_reply_count, mp_reply_count[, buyer_message_count]."""
+    name = getattr(file, "name", "") or ""
+    if str(name).lower().endswith((".xlsx", ".xls")):
+        raw = pd.read_excel(file)
+    else:
+        raw = pd.read_csv(file)
+    raw = raw.rename(columns=lambda c: str(c).strip().upper())
+
+    required = {"MERCHANT_ID", "LOG_DATE", "TC_REPLY_COUNT", "MP_REPLY_COUNT"}
+    missing = required - set(raw.columns)
+    if missing:
+        raise ValueError(
+            f"TC usage file is missing expected column(s): {', '.join(sorted(missing))}. "
+            f"Expected at least: {', '.join(sorted(required))} (CHANNEL is used too, if present)."
+        )
+
+    out = pd.DataFrame()
+    out["merchant_id"] = _canonicalize_casing(raw["MERCHANT_ID"].map(_clean_id))
+    out["date"] = pd.to_datetime(raw["LOG_DATE"], errors="coerce")
+    if "CHANNEL" in raw.columns:
+        out["channel"] = raw["CHANNEL"].astype(str).str.strip()
+        out["platform"] = out["channel"].map(_channel_to_platform)
+    else:
+        out["channel"] = None
+        out["platform"] = None
+    out["tc_reply_count"] = _to_num(raw["TC_REPLY_COUNT"]).fillna(0)
+    out["mp_reply_count"] = _to_num(raw["MP_REPLY_COUNT"]).fillna(0)
+    if "BUYER_MESSAGE_COUNT" in raw.columns:
+        out["buyer_message_count"] = _to_num(raw["BUYER_MESSAGE_COUNT"]).fillna(0)
+    out = out.dropna(subset=["date", "merchant_id"])
+    return out.reset_index(drop=True)
+
+
 # ============================================================================
 # SECTION 2: METRICS & SUMMARY TABLES
 # ============================================================================
@@ -559,7 +652,7 @@ def group_performance(df: pd.DataFrame, group_col: str, label: str) -> pd.DataFr
             "CRR %": sc["crr_pct"],
             "CRT (min)": sc["crt_min"],
             "CSAT %": sc["csat_pct"],
-            "Guided Revenue": float(g["guided_revenue"].sum(skipna=True)),
+            "Guided Revenue (USD)": float(g["guided_revenue_usd"].sum(skipna=True)) if "guided_revenue_usd" in g.columns else float(g["guided_revenue"].sum(skipna=True)),
         })
     out = pd.DataFrame(rows).sort_values("Total Conversations", ascending=False).reset_index(drop=True)
     return out
@@ -582,6 +675,78 @@ def store_performance(df: pd.DataFrame) -> pd.DataFrame:
 
 def platform_performance(df: pd.DataFrame) -> pd.DataFrame:
     return group_performance(df, "platform", "Platform")
+
+
+# --------------------------------------------------------------------------
+# TC usage metrics (from the separate TC Usage Summary upload — see
+# load_tc_usage() in Section 1). All of these degrade gracefully to "nothing
+# to add" when no TC usage file has been uploaded, so the rest of the app
+# doesn't need to branch on whether it's present.
+# --------------------------------------------------------------------------
+
+def compute_tc_usage_scorecard(tc_df: pd.DataFrame) -> dict:
+    if tc_df is None or tc_df.empty:
+        return {"total_tc_replies": None, "total_mp_replies": None, "tc_reply_pct": None, "mp_reply_pct": None}
+    total_tc = float(tc_df["tc_reply_count"].sum())
+    total_mp = float(tc_df["mp_reply_count"].sum())
+    total = total_tc + total_mp
+    return {
+        "total_tc_replies": total_tc,
+        "total_mp_replies": total_mp,
+        "tc_reply_pct": (total_tc / total * 100) if total > 0 else np.nan,
+        "mp_reply_pct": (total_mp / total * 100) if total > 0 else np.nan,
+    }
+
+
+def tc_usage_by_merchant(tc_df: pd.DataFrame) -> pd.DataFrame:
+    """TC/MP reply counts summed per merchant_id, with TC Reply %."""
+    if tc_df is None or tc_df.empty:
+        return pd.DataFrame(columns=["merchant_id", "TC Replies", "MP Replies", "TC Reply %"])
+    g = tc_df.groupby("merchant_id", dropna=False).agg(
+        tc_reply_count=("tc_reply_count", "sum"),
+        mp_reply_count=("mp_reply_count", "sum"),
+    ).reset_index()
+    total = g["tc_reply_count"] + g["mp_reply_count"]
+    g["TC Reply %"] = np.where(total > 0, g["tc_reply_count"] / total * 100, np.nan)
+    return g.rename(columns={"tc_reply_count": "TC Replies", "mp_reply_count": "MP Replies"})
+
+
+def merchant_performance_with_tc(df: pd.DataFrame, tc_df: pd.DataFrame) -> pd.DataFrame:
+    """Merchant ID-wise performance, with TC/MP reply columns merged in when
+    a TC usage file is loaded. No-op (returns the plain table) otherwise."""
+    perf = merchant_performance(df)
+    if perf.empty or tc_df is None or tc_df.empty:
+        return perf
+    tc = tc_usage_by_merchant(tc_df).rename(columns={"merchant_id": "Merchant / Seller ID"})
+    return perf.merge(tc, on="Merchant / Seller ID", how="left")
+
+
+def seller_performance_with_tc(df: pd.DataFrame, tc_df: pd.DataFrame) -> pd.DataFrame:
+    """Seller-wise (BX) performance, with TC/MP reply columns merged in via a
+    merchant_id -> bx_name lookup built from the currently-filtered main data
+    (each merchant's most common BX in view). No-op if no TC usage file, or
+    if none of its merchant IDs match a BX in the current view."""
+    perf = seller_performance(df)
+    if perf.empty or tc_df is None or tc_df.empty:
+        return perf
+    mapping = (
+        df.dropna(subset=["merchant_id", "bx_name"])
+          .groupby("merchant_id")["bx_name"]
+          .agg(lambda s: s.value_counts().idxmax())
+    )
+    tc = tc_df.copy()
+    tc["bx_name"] = tc["merchant_id"].map(mapping)
+    tc = tc.dropna(subset=["bx_name"])
+    if tc.empty:
+        return perf
+    g = tc.groupby("bx_name", dropna=False).agg(
+        tc_reply_count=("tc_reply_count", "sum"),
+        mp_reply_count=("mp_reply_count", "sum"),
+    ).reset_index()
+    total = g["tc_reply_count"] + g["mp_reply_count"]
+    g["TC Reply %"] = np.where(total > 0, g["tc_reply_count"] / total * 100, np.nan)
+    g = g.rename(columns={"bx_name": "Seller (BX Name)", "tc_reply_count": "TC Replies", "mp_reply_count": "MP Replies"})
+    return perf.merge(g, on="Seller (BX Name)", how="left")
 
 
 # ============================================================================
@@ -710,11 +875,27 @@ def _load(lazada_bytes, shopee_bytes, tiktok_bytes):
     return load_all(lz, sp, tk)
 
 
+@st.cache_data(show_spinner="Reading TC usage summary...")
+def _load_tc_usage_cached(file_bytes, file_name):
+    buf = io.BytesIO(file_bytes)
+    buf.name = file_name
+    return load_tc_usage(buf)
+
+
 st.sidebar.title("Data")
 st.sidebar.caption("Upload the latest tracker exports. Re-upload any time to refresh the dashboard.")
 lazada_upload = st.sidebar.file_uploader("Lazada Performance Tracker (.xlsx)", type=["xlsx"], key="lazada")
 shopee_upload = st.sidebar.file_uploader("Shopee Performance Tracker (.xlsx)", type=["xlsx"], key="shopee")
 tiktok_upload = st.sidebar.file_uploader("TikTok Performance Tracker (.xlsx)", type=["xlsx"], key="tiktok")
+
+st.sidebar.divider()
+st.sidebar.caption(
+    "Optional: adds Total TC Replies / MP Replies / TC Reply % / MP Reply % "
+    "to the scorecard and the Merchant ID-wise / Seller-wise tables."
+)
+tc_usage_upload = st.sidebar.file_uploader(
+    "TC Usage Summary (.csv or .xlsx)", type=["csv", "xlsx"], key="tc_usage"
+)
 
 if not (lazada_upload or shopee_upload or tiktok_upload):
     st.title("TC Chat Performance Dashboard")
@@ -730,6 +911,48 @@ df_all = _load(
 if df_all.empty:
     st.error("No usable rows were found in the uploaded file(s). Check that month-tab sheet names look like 'July 2026'.")
     st.stop()
+
+if tc_usage_upload is not None:
+    try:
+        tc_usage_df_all = _load_tc_usage_cached(tc_usage_upload.getvalue(), tc_usage_upload.name)
+    except ValueError as e:
+        st.sidebar.error(str(e))
+        tc_usage_df_all = pd.DataFrame()
+else:
+    tc_usage_df_all = pd.DataFrame()
+
+
+# --------------------------------------------------------------------------
+# Currency (Guided Revenue -> USD)
+# --------------------------------------------------------------------------
+
+st.sidebar.divider()
+st.sidebar.title("Currency")
+countries_in_data = df_all["country"].dropna().unique().tolist()
+unmapped_countries = sorted(c for c in countries_in_data if c not in CURRENCY_BY_COUNTRY)
+present_currencies = sorted({CURRENCY_BY_COUNTRY.get(c, "USD") for c in countries_in_data})
+with st.sidebar.expander("FX rates (local currency per 1 USD)", expanded=bool(unmapped_countries)):
+    fx_rates = {"USD": 1.0}
+    for cur in present_currencies:
+        if cur == "USD":
+            continue
+        fx_rates[cur] = st.number_input(
+            f"{cur} per USD", min_value=0.0001, value=float(DEFAULT_FX_TO_USD.get(cur, 1.0)),
+            step=0.01, format="%.4f", key=f"fx_{cur}",
+        )
+    st.caption(
+        "Approximate defaults — update to your actual rates. Guided Revenue "
+        "(USD) recalculates instantly; nothing is re-uploaded."
+    )
+    if unmapped_countries:
+        st.warning(
+            f"Country code(s) {', '.join(unmapped_countries)} aren't mapped to a "
+            "currency, so their Guided Revenue is being treated as already-USD "
+            "(NOT converted) — this is very likely wrong. Add them to "
+            "CURRENCY_BY_COUNTRY near the top of app.py."
+        )
+
+df_all = add_usd_conversion(df_all, fx_rates)
 
 
 # --------------------------------------------------------------------------
@@ -769,8 +992,24 @@ if store_sel:
 
 df = df_all[mask].copy()
 
+# TC usage is filtered by date range + merchant selection only (it has no
+# store_name / tracker-platform field of its own to match the Store filter
+# against — its "platform" is derived from CHANNEL and is looser).
+if not tc_usage_df_all.empty:
+    tc_mask = (
+        (tc_usage_df_all["date"].dt.date >= start_date)
+        & (tc_usage_df_all["date"].dt.date <= end_date)
+    )
+    if merchant_sel:
+        tc_mask &= tc_usage_df_all["merchant_id"].isin(merchant_sel)
+    tc_usage_df = tc_usage_df_all[tc_mask].copy()
+else:
+    tc_usage_df = tc_usage_df_all
+
 st.sidebar.divider()
 st.sidebar.caption(f"{len(df):,} rows in view (of {len(df_all):,} total loaded)")
+if not tc_usage_df_all.empty:
+    st.sidebar.caption(f"{len(tc_usage_df):,} TC usage rows in view (of {len(tc_usage_df_all):,} total loaded)")
 
 
 # --------------------------------------------------------------------------
@@ -785,6 +1024,8 @@ if df.empty:
     st.stop()
 
 sc = compute_scorecard(df)
+tc_sc = compute_tc_usage_scorecard(tc_usage_df)
+tc_data_loaded = tc_usage_upload is not None and not tc_usage_df_all.empty
 
 
 def fmt_pct(v):
@@ -799,22 +1040,38 @@ def fmt_min(v):
     return "N/A" if v is None or (isinstance(v, float) and np.isnan(v)) else f"{v:.1f} min"
 
 
+def fmt_tc(v):
+    return fmt_num(v) if tc_data_loaded else "Pending*"
+
+
+def fmt_tc_pct(v):
+    return fmt_pct(v) if tc_data_loaded else "Pending*"
+
+
 row1 = st.columns(4)
 row1[0].metric("Total Conversations", fmt_num(sc["total_conversations"]))
-row1[1].metric("Total TC Replies", "Pending*")
-row1[2].metric("Total MP Replies", "Pending*")
-row1[3].metric("TC Reply %", "Pending*")
+row1[1].metric("Total TC Replies", fmt_tc(tc_sc["total_tc_replies"]))
+row1[2].metric("Total MP Replies", fmt_tc(tc_sc["total_mp_replies"]))
+row1[3].metric("TC Reply %", fmt_tc_pct(tc_sc["tc_reply_pct"]))
 
 row2 = st.columns(4)
-row2[0].metric("MP Reply %", "Pending*")
+row2[0].metric("MP Reply %", fmt_tc_pct(tc_sc["mp_reply_pct"]))
 row2[1].metric("CRR (Response Rate)", fmt_pct(sc["crr_pct"]))
 row2[2].metric("CRT (Response Time)", fmt_min(sc["crt_min"]))
 row2[3].metric("CSAT", fmt_pct(sc["csat_pct"]) if not df["csat_pct"].dropna().empty else "N/A")
 
-st.caption(
-    "*TC/MP reply metrics are placeholders until the separate TC usage dataset is added. "
-    "CSAT excludes Lazada rows (no CSAT field in that export)."
-)
+if tc_data_loaded:
+    st.caption(
+        "TC/MP reply metrics are from the uploaded TC Usage Summary, filtered to the "
+        "current date range and Merchant ID/Seller ID selection (the Platform and Store "
+        "filters don't apply to this file — see the sidebar note). "
+        "CSAT excludes Lazada rows (no CSAT field in that export)."
+    )
+else:
+    st.caption(
+        "*TC/MP reply metrics are placeholders until you upload a TC Usage Summary "
+        "file in the sidebar. CSAT excludes Lazada rows (no CSAT field in that export)."
+    )
 
 st.divider()
 
@@ -855,7 +1112,7 @@ with tab_overall:
 
 with tab_merchant:
     st.subheader("Merchant ID-wise performance")
-    mp = merchant_performance(df)
+    mp = merchant_performance_with_tc(df, tc_usage_df)
     st.dataframe(mp, use_container_width=True, hide_index=True)
     if not mp.empty:
         top = mp.head(15)
@@ -872,7 +1129,7 @@ with tab_seller:
         "If you'd rather this tab be identical to Merchant ID-wise, let me know."
     )
     st.subheader("Seller-wise performance")
-    st.dataframe(seller_performance(df), use_container_width=True, hide_index=True)
+    st.dataframe(seller_performance_with_tc(df, tc_usage_df), use_container_width=True, hide_index=True)
 
 st.divider()
 
@@ -889,7 +1146,7 @@ with t1:
 with t2:
     st.dataframe(wow_summary(df), use_container_width=True, hide_index=True)
 with t3:
-    st.dataframe(merchant_performance(df), use_container_width=True, hide_index=True)
+    st.dataframe(merchant_performance_with_tc(df, tc_usage_df), use_container_width=True, hide_index=True)
 
 st.divider()
 
@@ -914,21 +1171,23 @@ with col_a:
 with col_b:
     st.write("**Complete report** (all loaded data + summaries, ignores filters)")
 
-    def build_full_report(all_df: pd.DataFrame) -> bytes:
+    def build_full_report(all_df: pd.DataFrame, all_tc_df: pd.DataFrame) -> bytes:
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
             all_df.to_excel(writer, sheet_name="Raw Data (Combined)", index=False)
             mom_summary(all_df).to_excel(writer, sheet_name="MoM Summary", index=False)
             wow_summary(all_df).to_excel(writer, sheet_name="WoW Summary", index=False)
-            merchant_performance(all_df).to_excel(writer, sheet_name="Merchant-Seller ID Wise", index=False)
-            seller_performance(all_df).to_excel(writer, sheet_name="Seller (BX) Wise", index=False)
+            merchant_performance_with_tc(all_df, all_tc_df).to_excel(writer, sheet_name="Merchant-Seller ID Wise", index=False)
+            seller_performance_with_tc(all_df, all_tc_df).to_excel(writer, sheet_name="Seller (BX) Wise", index=False)
             store_performance(all_df).to_excel(writer, sheet_name="Store Wise", index=False)
             platform_performance(all_df).to_excel(writer, sheet_name="Platform Wise", index=False)
+            if all_tc_df is not None and not all_tc_df.empty:
+                all_tc_df.to_excel(writer, sheet_name="TC Usage Data (Raw)", index=False)
         return buf.getvalue()
 
     st.download_button(
         "Download complete report (Excel)",
-        data=build_full_report(df_all),
+        data=build_full_report(df_all, tc_usage_df_all),
         file_name=f"tc_chat_full_report_{datetime.now():%Y%m%d}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
