@@ -809,24 +809,39 @@ RECIPIENTS = [
 SYNC_LAG_DAYS = 1  # days of lag before we consider a platform "not synced"
 
 
-def check_sync_status(df: pd.DataFrame, as_of: datetime = None) -> pd.DataFrame:
-    """Return a per-platform sync status table based on the most recent date
-    present in the loaded data."""
+SYNC_GROUP_LABELS = {
+    "platform": "Platform",
+    "merchant_id": "Merchant / Seller ID",
+    "channel": "Nickname / Channel",
+}
+
+
+def check_sync_status(df: pd.DataFrame, group_cols=("platform",), as_of: datetime = None) -> pd.DataFrame:
+    """Return a sync status table grouped by `group_cols`, based on the most
+    recent date present in the loaded data for each group. Pass
+    group_cols=("platform",) for the platform-level overview (original
+    behavior), or a finer grouping like ("platform", "merchant_id") or
+    ("platform", "merchant_id", "channel") for Seller ID- or
+    Nickname/Channel-level detail — this catches a single store/channel that
+    has stopped syncing even while the rest of its platform looks current."""
     if as_of is None:
         as_of = datetime.now()
+    group_cols = list(group_cols)
+    labeled_cols = [SYNC_GROUP_LABELS.get(c, c) for c in group_cols]
+    if df.empty or not all(c in df.columns for c in group_cols):
+        return pd.DataFrame(columns=labeled_cols + ["Latest data date", "Days behind", "Status"])
     rows = []
-    platforms = df["platform"].dropna().unique() if not df.empty else []
-    for platform in platforms:
-        latest = df.loc[df["platform"] == platform, "date"].max()
+    for key, g in df.dropna(subset=group_cols).groupby(group_cols, dropna=False):
+        key = key if isinstance(key, tuple) else (key,)
+        latest = g["date"].max()
         lag_days = (pd.Timestamp(as_of).normalize() - latest.normalize()).days if pd.notna(latest) else None
         status = "Not synced" if (lag_days is None or lag_days > SYNC_LAG_DAYS) else "Synced"
-        rows.append({
-            "Platform": platform,
-            "Latest data date": latest.date() if pd.notna(latest) else None,
-            "Days behind": lag_days,
-            "Status": status,
-        })
-    return pd.DataFrame(rows)
+        row = dict(zip(labeled_cols, key))
+        row["Latest data date"] = latest.date() if pd.notna(latest) else None
+        row["Days behind"] = lag_days
+        row["Status"] = status
+        rows.append(row)
+    return pd.DataFrame(rows, columns=labeled_cols + ["Latest data date", "Days behind", "Status"]).sort_values(labeled_cols).reset_index(drop=True)
 
 
 def send_sync_alert(status_df: pd.DataFrame, recipients=None):
@@ -1237,12 +1252,20 @@ st.divider()
 st.header("Chrome Extension Sync Check")
 st.caption(
     "Manual check (per your requirement): click below to see whether each "
-    "platform's data looks current, and optionally email the team if not."
+    "platform's data looks current, and optionally email the team if not. "
+    "Expand below for Seller ID- and Nickname/Channel-level detail — a single "
+    "store can stop syncing while the rest of its platform still looks current."
 )
 
 if st.button("Check sync status"):
-    status_df = check_sync_status(df_all)
-    st.session_state["sync_status_df"] = status_df
+    st.session_state["sync_status_df"] = check_sync_status(df_all, group_cols=("platform",))
+    st.session_state["sync_status_seller_df"] = check_sync_status(df_all, group_cols=("platform", "merchant_id"))
+    if not tc_usage_df_all.empty:
+        st.session_state["sync_status_channel_df"] = check_sync_status(
+            tc_usage_df_all, group_cols=("platform", "merchant_id", "channel")
+        )
+    else:
+        st.session_state.pop("sync_status_channel_df", None)
 
 if "sync_status_df" in st.session_state:
     status_df = st.session_state["sync_status_df"]
@@ -1251,6 +1274,7 @@ if "sync_status_df" in st.session_state:
         color = STATUS_GOOD if val == "Synced" else STATUS_CRITICAL
         return f"color: {color}; font-weight: 600"
 
+    st.subheader("Platform-level overview")
     st.dataframe(
         status_df.style.map(_style_status, subset=["Status"]),
         use_container_width=True, hide_index=True,
@@ -1261,6 +1285,43 @@ if "sync_status_df" in st.session_state:
         st.warning(f"{len(not_synced)} platform(s) appear out of sync.")
     else:
         st.success("All platforms look up to date.")
+
+    seller_df = st.session_state.get("sync_status_seller_df", pd.DataFrame())
+    with st.expander(f"Seller ID-level detail ({len(seller_df)} merchants)", expanded=False):
+        if seller_df.empty:
+            st.caption("No Merchant ID data available in the current upload.")
+        else:
+            st.dataframe(
+                seller_df.style.map(_style_status, subset=["Status"]),
+                use_container_width=True, hide_index=True,
+            )
+            not_synced_sellers = seller_df[seller_df["Status"] == "Not synced"]
+            if not not_synced_sellers.empty:
+                st.warning(f"{len(not_synced_sellers)} merchant/platform combination(s) appear out of sync.")
+            else:
+                st.success("All merchants look up to date.")
+
+    channel_df = st.session_state.get("sync_status_channel_df")
+    with st.expander(
+        f"Nickname / Channel-level detail ({len(channel_df) if channel_df is not None else 0} channels)",
+        expanded=False,
+    ):
+        if channel_df is None or channel_df.empty:
+            st.caption(
+                "Upload a TC Usage Summary file in the sidebar to get Nickname/Channel-level "
+                "detail (it carries the per-store channel/nickname, e.g. \"lazada-12\", that the "
+                "three tracker workbooks don't)."
+            )
+        else:
+            st.dataframe(
+                channel_df.style.map(_style_status, subset=["Status"]),
+                use_container_width=True, hide_index=True,
+            )
+            not_synced_channels = channel_df[channel_df["Status"] == "Not synced"]
+            if not not_synced_channels.empty:
+                st.warning(f"{len(not_synced_channels)} channel(s) appear out of sync.")
+            else:
+                st.success("All channels look up to date.")
 
     st.caption(f"Alert will be sent to: {', '.join(RECIPIENTS)} (confirm/edit RECIPIENTS near the top of app.py, Section 3)")
     if st.button("Send alert email now"):
