@@ -97,7 +97,10 @@ This was scoped through a clarifying round before building. Decisions made:
   "lazada-12", from that file's `CHANNEL`/`NICKNAME_ID` column). The
   platform-level rollup can mask a single store that's stopped syncing while
   the rest of its platform still looks current — the two detail levels catch
-  that. The email alert still summarizes at the platform level.
+  that. **The email alert now includes all three levels** — the
+  platform-level overview, plus every not-synced Merchant/Seller ID and every
+  not-synced Nickname/Channel (or "(none — all up to date)" for a level with
+  nothing to flag) — not just the platform summary.
 
 Still needs your input before the email feature is real:
 
