@@ -815,6 +815,51 @@ SYNC_GROUP_LABELS = {
     "channel": "Nickname / Channel",
 }
 
+# Same colors as the in-app sync table (STATUS_GOOD / STATUS_CRITICAL,
+# defined later in Section 4) and the platform line charts (PLATFORM_COLORS)
+# — duplicated here as plain hex so the email HTML is self-contained and
+# doesn't depend on load order.
+EMAIL_STATUS_GOOD = "#0ca30c"
+EMAIL_STATUS_CRITICAL = "#d03b3b"
+EMAIL_PLATFORM_COLORS = {"Lazada": "#2a78d6", "Shopee": "#eb6834", "TikTok": "#1baf7a"}
+
+
+def _html_status_table(df: pd.DataFrame) -> str:
+    """Render a DataFrame with a 'Status' column as an inline-styled HTML
+    table (email clients need inline CSS, not stylesheets) — Synced rows in
+    green, Not synced rows in red, matching the in-app coloring."""
+    if df is None or df.empty:
+        return "<p style='color:#666;font-family:Arial,Helvetica,sans-serif;font-size:13px;'>(none)</p>"
+    cols = list(df.columns)
+    header = "".join(
+        f"<th style='padding:6px 10px;text-align:left;border-bottom:2px solid #ddd;"
+        f"background:#f7f7f5;font-size:12px;font-family:Arial,Helvetica,sans-serif;color:#333;'>{c}</th>"
+        for c in cols
+    )
+    body_rows = []
+    for i, (_, row) in enumerate(df.iterrows()):
+        bg = "#ffffff" if i % 2 == 0 else "#fafaf9"
+        cells = []
+        for c in cols:
+            val = row[c]
+            style = (
+                "padding:6px 10px;border-bottom:1px solid #eee;font-size:13px;"
+                "font-family:Arial,Helvetica,sans-serif;"
+            )
+            if c == "Status":
+                color = EMAIL_STATUS_GOOD if val == "Synced" else EMAIL_STATUS_CRITICAL
+                style += f"font-weight:600;color:{color};"
+            elif c == "Platform" and val in EMAIL_PLATFORM_COLORS:
+                style += f"font-weight:600;color:{EMAIL_PLATFORM_COLORS[val]};"
+            else:
+                style += "color:#333;"
+            cells.append(f"<td style='{style}'>{val}</td>")
+        body_rows.append(f"<tr style='background:{bg};'>{''.join(cells)}</tr>")
+    return (
+        "<table style='border-collapse:collapse;width:100%;'>"
+        f"<thead><tr>{header}</tr></thead><tbody>{''.join(body_rows)}</tbody></table>"
+    )
+
 
 def check_sync_status(df: pd.DataFrame, group_cols=("platform",), as_of: datetime = None) -> pd.DataFrame:
     """Return a sync status table grouped by `group_cols`, based on the most
@@ -911,11 +956,63 @@ def send_sync_alert(status_df: pd.DataFrame, recipients=None, seller_df: pd.Data
     body_lines += ["", "— Sent from the TC Chat Performance Dashboard"]
     body = "\n".join(body_lines)
 
-    msg = MIMEMultipart()
+    # HTML version — same content as the plain-text body above, styled with
+    # the same colors as the in-app sync tables (green = Synced, red = Not
+    # synced) so it's easier to scan than a plain-text list.
+    banner_bg, banner_color = ("#fdecea", EMAIL_STATUS_CRITICAL) if any_not_synced else ("#eaf7ea", EMAIL_STATUS_GOOD)
+    banner_text = (
+        "The following platform(s) have not synced recent data via the Chrome extension:"
+        if any_not_synced else "All platforms are reporting up-to-date data."
+    )
+    sections_html = [
+        f"<div style='background:{banner_bg};color:{banner_color};padding:12px 16px;"
+        f"border-radius:6px;font-family:Arial,Helvetica,sans-serif;font-size:14px;"
+        f"font-weight:600;margin-bottom:20px;'>{banner_text}</div>",
+        "<h3 style='font-family:Arial,Helvetica,sans-serif;color:#111;font-size:15px;"
+        "margin:0 0 8px;'>Platform-level overview</h3>",
+        _html_status_table(status_df),
+    ]
+
+    if seller_df is not None and not seller_df.empty:
+        not_synced_sellers = seller_df[seller_df["Status"] == "Not synced"]
+        sections_html.append(
+            "<h3 style='font-family:Arial,Helvetica,sans-serif;color:#111;font-size:15px;"
+            f"margin:24px 0 8px;'>Seller ID-level detail &mdash; {len(not_synced_sellers)} of "
+            f"{len(seller_df)} merchant/platform combination(s) not synced</h3>"
+        )
+        sections_html.append(
+            _html_status_table(not_synced_sellers) if not not_synced_sellers.empty
+            else f"<p style='color:{EMAIL_STATUS_GOOD};font-family:Arial,Helvetica,sans-serif;font-size:13px;'>All merchants look up to date.</p>"
+        )
+
+    if channel_df is not None and not channel_df.empty:
+        not_synced_channels = channel_df[channel_df["Status"] == "Not synced"]
+        sections_html.append(
+            "<h3 style='font-family:Arial,Helvetica,sans-serif;color:#111;font-size:15px;"
+            f"margin:24px 0 8px;'>Nickname / Channel-level detail &mdash; {len(not_synced_channels)} of "
+            f"{len(channel_df)} channel(s) not synced</h3>"
+        )
+        sections_html.append(
+            _html_status_table(not_synced_channels) if not not_synced_channels.empty
+            else f"<p style='color:{EMAIL_STATUS_GOOD};font-family:Arial,Helvetica,sans-serif;font-size:13px;'>All channels look up to date.</p>"
+        )
+
+    html_body = (
+        "<html><body style='margin:0;padding:0;background:#f4f4f2;'>"
+        "<div style='max-width:700px;margin:0 auto;padding:24px;background:#ffffff;'>"
+        f"<h2 style='font-family:Arial,Helvetica,sans-serif;color:#111;font-size:19px;margin:0 0 16px;'>{subject}</h2>"
+        + "".join(sections_html) +
+        "<p style='font-family:Arial,Helvetica,sans-serif;color:#999;font-size:12px;margin-top:28px;'>"
+        "Sent from the TC Chat Performance Dashboard</p>"
+        "</div></body></html>"
+    )
+
+    msg = MIMEMultipart("alternative")
     msg["From"] = smtp_cfg["sender"]
     msg["To"] = ", ".join(recipients)
     msg["Subject"] = subject
     msg.attach(MIMEText(body, "plain"))
+    msg.attach(MIMEText(html_body, "html"))
 
     try:
         with smtplib.SMTP(smtp_cfg["host"], int(smtp_cfg.get("port", 587))) as server:
