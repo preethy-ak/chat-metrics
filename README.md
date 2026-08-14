@@ -4,9 +4,9 @@ A single Streamlit app that monitors TC chat usage, CRR, CRT, and CSAT across
 Lazada, Shopee, and TikTok chat performance exports — with seller-wise,
 merchant-ID-wise, and overall views, MoM/WoW summaries, filtered/full report
 downloads, a manual Chrome-extension sync check with email alert, an optional
-TC Usage Summary upload (Total TC Replies / MP Replies / TC Reply % / MP
-Reply %), and Guided Revenue converted to USD across the multiple local
-currencies in the data.
+TC Usage Summary upload (Total TC Replies / MP Replies / Total Seller
+Replies / TC Reply % / MP Reply %), and Guided Revenue converted to USD
+across the multiple local currencies in the data.
 
 **Everything lives in one file, `app.py`.** Data loading, metrics, the email
 alert, and the UI are all inlined into that single script on purpose — no
@@ -125,15 +125,17 @@ not currently used elsewhere; ask if you'd like those folded in too, e.g. as
 an alternate CRR/CSAT/CRT source).
 
 Once uploaded, it feeds:
-- The four scorecard tiles (Total TC Replies, Total MP Replies, TC Reply %,
-  MP Reply %) — filtered by the current **Date range** and **Merchant
-  ID/Seller ID** selections only. The Platform and Store filters don't apply
-  to this file (it doesn't have a matching Store field, and its
-  channel-derived platform is looser than the tracker data's).
-- A **TC Replies / MP Replies / TC Reply %** breakdown merged into the
-  **Merchant ID-wise Performance** table (direct match on Merchant ID) and
-  the **Seller-wise Performance (BX)** table (via a Merchant ID → BX
-  executive lookup built from the currently-loaded tracker data).
+- Five scorecard tiles: Total TC Replies, Total MP Replies, **Total Seller
+  Replies** (TC + MP — the two simply add up), TC Reply %, MP Reply % —
+  filtered by the current **Date range** and **Merchant ID/Seller ID**
+  selections only. The Platform and Store filters don't apply to this file
+  (it doesn't have a matching Store field, and its channel-derived platform
+  is looser than the tracker data's).
+- A **TC Replies / MP Replies / Total Seller Replies / TC Reply %** breakdown
+  merged into the **Merchant ID-wise Performance** table (direct match on
+  Merchant ID) and the **Seller-wise Performance (BX)** table (via a
+  Merchant ID → BX executive lookup built from the currently-loaded tracker
+  data).
 - A **"TC Usage Data (Raw)"** sheet in the complete Excel report download.
 
 If a merchant appears in the trackers but not in the TC usage file (or vice
@@ -185,6 +187,42 @@ themselves — these are handled automatically, but worth knowing about:
   Summary Tables, that tab was wired to the same table as "Merchant ID-wise
   Performance" instead of the BX-executive grouping — fixed so it now shows
   Seller (BX Name) rows as labeled.
+
+## Why Total Conversations can look much smaller than Total TC/MP Replies
+
+This came up because a live dashboard view showed Total Conversations far
+below Total TC Replies + Total MP Replies. Checked directly against your
+uploaded files — this is not a duplicate-counting bug:
+
+- `tc_chat_filtered_data.csv` (one of your two TC Usage Summary samples) has
+  **both** a `TOTAL_CONVERSATIONS` column and `TC_REPLY_COUNT` /
+  `MP_REPLY_COUNT` columns at the exact same row grain (per merchant/date/
+  channel). Summed across the whole file: 66,871 total conversations vs.
+  235,969 combined TC+MP replies — replies outnumber conversations by about
+  **3.5x**, in the same file, on the same rows.
+- That ratio makes sense once you consider what each column counts: Total
+  Conversations is chat *threads*, while TC/MP Reply counts are individual
+  reply *messages*. A single conversation thread naturally contains several
+  back-and-forth reply messages, so reply totals will always run several
+  times higher than conversation totals — that's expected, not an error.
+- No duplicate rows were found in either TC Usage Summary sample file
+  (checked for exact-duplicate rows, and for repeated merchant/date/channel
+  combinations — the only repeats were rows where `CHANNEL` was "Unknown"
+  but a real per-store channel was recorded in `NICKNAME_ID` instead, i.e.
+  different stores, not duplicates).
+- The two scorecard groups also draw from different source files (Total
+  Conversations from the three tracker workbooks; TC/MP Replies from the TC
+  Usage Summary upload) and the TC Usage file isn't filtered by Platform/
+  Store the way the tracker data is — so the exact ratio you see will shift
+  with your filters, but the direction (replies > conversations) is expected
+  throughout.
+
+Given this, Total Conversations has **not** been removed — the gap is a real
+difference in units, not a bug. A caption now appears under the scorecard
+whenever a TC Usage file is loaded, explaining the units so this doesn't look
+like an error again. If you'd still rather remove Total Conversations, or
+label it more distinctly (e.g. "Conversations" vs "Reply Messages"), that's a
+one-line change — just say so.
 
 ## Number formatting
 
