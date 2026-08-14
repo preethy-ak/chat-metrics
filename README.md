@@ -59,6 +59,16 @@ import load_all` failed with `ModuleNotFoundError: No module named 'utils'`.
 This version removes the possibility of that mistake entirely by not using a
 subfolder at all.
 
+## Filters
+
+Sidebar filters (all optional except Date range, which defaults to your full
+loaded range): **Date range**, **Platform** (Lazada/Shopee/TikTok),
+**Merchant ID / Seller ID**, **Store**, and **Country**. Country filters on
+the same `country` field used for currency conversion (e.g. `SG`, `MY`, `PH`,
+`TH`, `ID`) and applies to the three tracker workbooks only — the TC Usage
+Summary upload has no country field, so (like Store) it isn't affected by
+this filter; it's still narrowed by Date range and Merchant ID/Seller ID.
+
 ## What was decided vs. what's still open
 
 This was scoped through a clarifying round before building. Decisions made:
@@ -217,12 +227,15 @@ uploaded files — this is not a duplicate-counting bug:
   with your filters, but the direction (replies > conversations) is expected
   throughout.
 
-Given this, Total Conversations has **not** been removed — the gap is a real
-difference in units, not a bug. A caption now appears under the scorecard
-whenever a TC Usage file is loaded, explaining the units so this doesn't look
-like an error again. If you'd still rather remove Total Conversations, or
-label it more distinctly (e.g. "Conversations" vs "Reply Messages"), that's a
-one-line change — just say so.
+Even with that explanation on record, **Total Conversations has since been
+removed from the scorecard** per a follow-up request — the tile that showed
+it next to Total TC/MP Replies is gone, so there's no more units mismatch to
+explain at a glance. It's still tracked internally (it feeds CRR, the
+Merchant/Seller/Store/Platform performance tables, the MoM/WoW summaries, and
+the "Daily conversations by platform" / "Top merchants by conversation
+volume" charts — removing it there too would break those), just no longer
+shown as its own top-line number. Say the word if you'd like it stripped out
+of those tables/charts as well.
 
 ## Number formatting
 
