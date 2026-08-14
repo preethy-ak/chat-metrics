@@ -844,8 +844,9 @@ def check_sync_status(df: pd.DataFrame, group_cols=("platform",), as_of: datetim
     return pd.DataFrame(rows, columns=labeled_cols + ["Latest data date", "Days behind", "Status"]).sort_values(labeled_cols).reset_index(drop=True)
 
 
-def send_sync_alert(status_df: pd.DataFrame, recipients=None):
-    """Send an email alert listing which platforms appear out of sync.
+def send_sync_alert(status_df: pd.DataFrame, recipients=None, seller_df: pd.DataFrame = None, channel_df: pd.DataFrame = None):
+    """Send an email alert listing which platforms (and, when available,
+    which Merchant/Seller IDs and Nickname/Channels) appear out of sync.
     Returns (success: bool, message: str)."""
     recipients = recipients or RECIPIENTS
 
@@ -860,7 +861,13 @@ def send_sync_alert(status_df: pd.DataFrame, recipients=None):
         )
 
     not_synced = status_df[status_df["Status"] == "Not synced"]
-    if not_synced.empty:
+    any_not_synced = not not_synced.empty
+    if seller_df is not None and not seller_df.empty and (seller_df["Status"] == "Not synced").any():
+        any_not_synced = True
+    if channel_df is not None and not channel_df.empty and (channel_df["Status"] == "Not synced").any():
+        any_not_synced = True
+
+    if not any_not_synced:
         subject = "[TC Dashboard] All platforms synced"
         body_lines = ["All platforms are reporting up-to-date data:", ""]
     else:
@@ -870,11 +877,37 @@ def send_sync_alert(status_df: pd.DataFrame, recipients=None):
             "",
         ]
 
+    body_lines.append("PLATFORM-LEVEL OVERVIEW:")
     for _, row in status_df.iterrows():
         body_lines.append(
             f"  - {row['Platform']}: latest data = {row['Latest data date']}, "
             f"{row['Days behind']} day(s) behind, status = {row['Status']}"
         )
+
+    if seller_df is not None and not seller_df.empty:
+        not_synced_sellers = seller_df[seller_df["Status"] == "Not synced"]
+        body_lines += ["", f"SELLER ID-LEVEL DETAIL — {len(not_synced_sellers)} of {len(seller_df)} merchant/platform combination(s) not synced:"]
+        if not_synced_sellers.empty:
+            body_lines.append("  - (none — all merchants look up to date)")
+        else:
+            for _, row in not_synced_sellers.iterrows():
+                body_lines.append(
+                    f"  - {row['Platform']} / {row['Merchant / Seller ID']}: latest data = "
+                    f"{row['Latest data date']}, {row['Days behind']} day(s) behind"
+                )
+
+    if channel_df is not None and not channel_df.empty:
+        not_synced_channels = channel_df[channel_df["Status"] == "Not synced"]
+        body_lines += ["", f"NICKNAME / CHANNEL-LEVEL DETAIL — {len(not_synced_channels)} of {len(channel_df)} channel(s) not synced:"]
+        if not_synced_channels.empty:
+            body_lines.append("  - (none — all channels look up to date)")
+        else:
+            for _, row in not_synced_channels.iterrows():
+                body_lines.append(
+                    f"  - {row['Platform']} / {row['Merchant / Seller ID']} / {row['Nickname / Channel']}: "
+                    f"latest data = {row['Latest data date']}, {row['Days behind']} day(s) behind"
+                )
+
     body_lines += ["", "— Sent from the TC Chat Performance Dashboard"]
     body = "\n".join(body_lines)
 
@@ -1324,6 +1357,11 @@ if "sync_status_df" in st.session_state:
                 st.success("All channels look up to date.")
 
     st.caption(f"Alert will be sent to: {', '.join(RECIPIENTS)} (confirm/edit RECIPIENTS near the top of app.py, Section 3)")
+    st.caption("The email includes the platform-level overview plus the Seller ID- and Nickname/Channel-level detail shown above.")
     if st.button("Send alert email now"):
-        ok, msg = send_sync_alert(status_df)
+        ok, msg = send_sync_alert(
+            status_df,
+            seller_df=st.session_state.get("sync_status_seller_df"),
+            channel_df=st.session_state.get("sync_status_channel_df"),
+        )
         (st.success if ok else st.error)(msg)
