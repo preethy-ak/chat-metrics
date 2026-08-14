@@ -88,7 +88,16 @@ This was scoped through a clarifying round before building. Decisions made:
   selects Lazada-only data, CSAT shows "N/A".
 - **Sync alert is manual**, triggered by a button in the app (not a scheduled
   job), per your answer. It compares each platform's most recent data date to
-  today and flags anything more than 1 day behind as "Not synced."
+  today and flags anything more than 1 day behind as "Not synced." Clicking
+  **"Check sync status"** now shows three levels of detail: a **platform-level
+  overview** (as before), an expandable **Seller ID-level detail** table
+  (Platform + Merchant/Seller ID, from the three tracker workbooks), and — if
+  a TC Usage Summary file is loaded — an expandable **Nickname / Channel-level
+  detail** table (Platform + Merchant/Seller ID + Nickname/Channel, e.g.
+  "lazada-12", from that file's `CHANNEL`/`NICKNAME_ID` column). The
+  platform-level rollup can mask a single store that's stopped syncing while
+  the rest of its platform still looks current — the two detail levels catch
+  that. The email alert still summarizes at the platform level.
 
 Still needs your input before the email feature is real:
 
