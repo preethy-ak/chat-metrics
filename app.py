@@ -699,27 +699,35 @@ def platform_performance(df: pd.DataFrame) -> pd.DataFrame:
 
 def compute_tc_usage_scorecard(tc_df: pd.DataFrame) -> dict:
     if tc_df is None or tc_df.empty:
-        return {"total_tc_replies": None, "total_mp_replies": None, "tc_reply_pct": None, "mp_reply_pct": None}
+        return {
+            "total_tc_replies": None,
+            "total_mp_replies": None,
+            "total_seller_replies": None,
+            "tc_reply_pct": None,
+            "mp_reply_pct": None,
+        }
     total_tc = float(tc_df["tc_reply_count"].sum())
     total_mp = float(tc_df["mp_reply_count"].sum())
     total = total_tc + total_mp
     return {
         "total_tc_replies": total_tc,
         "total_mp_replies": total_mp,
+        "total_seller_replies": total,  # TC Replies + MP Replies
         "tc_reply_pct": (total_tc / total * 100) if total > 0 else np.nan,
         "mp_reply_pct": (total_mp / total * 100) if total > 0 else np.nan,
     }
 
 
 def tc_usage_by_merchant(tc_df: pd.DataFrame) -> pd.DataFrame:
-    """TC/MP reply counts summed per merchant_id, with TC Reply %."""
+    """TC/MP reply counts summed per merchant_id, with Total Seller Replies (TC + MP) and TC Reply %."""
     if tc_df is None or tc_df.empty:
-        return pd.DataFrame(columns=["merchant_id", "TC Replies", "MP Replies", "TC Reply %"])
+        return pd.DataFrame(columns=["merchant_id", "TC Replies", "MP Replies", "Total Seller Replies", "TC Reply %"])
     g = tc_df.groupby("merchant_id", dropna=False).agg(
         tc_reply_count=("tc_reply_count", "sum"),
         mp_reply_count=("mp_reply_count", "sum"),
     ).reset_index()
     total = g["tc_reply_count"] + g["mp_reply_count"]
+    g["Total Seller Replies"] = total
     g["TC Reply %"] = np.where(total > 0, g["tc_reply_count"] / total * 100, np.nan)
     return _round2(g.rename(columns={"tc_reply_count": "TC Replies", "mp_reply_count": "MP Replies"}))
 
@@ -757,6 +765,7 @@ def seller_performance_with_tc(df: pd.DataFrame, tc_df: pd.DataFrame) -> pd.Data
         mp_reply_count=("mp_reply_count", "sum"),
     ).reset_index()
     total = g["tc_reply_count"] + g["mp_reply_count"]
+    g["Total Seller Replies"] = total
     g["TC Reply %"] = np.where(total > 0, g["tc_reply_count"] / total * 100, np.nan)
     g = g.rename(columns={"bx_name": "Seller (BX Name)", "tc_reply_count": "TC Replies", "mp_reply_count": "MP Replies"})
     return _round2(perf.merge(g, on="Seller (BX Name)", how="left"))
@@ -1065,13 +1074,16 @@ row1 = st.columns(4)
 row1[0].metric("Total Conversations", fmt_num(sc["total_conversations"]))
 row1[1].metric("Total TC Replies", fmt_tc(tc_sc["total_tc_replies"]))
 row1[2].metric("Total MP Replies", fmt_tc(tc_sc["total_mp_replies"]))
-row1[3].metric("TC Reply %", fmt_tc_pct(tc_sc["tc_reply_pct"]))
+row1[3].metric("Total Seller Replies", fmt_tc(tc_sc["total_seller_replies"]))
 
 row2 = st.columns(4)
-row2[0].metric("MP Reply %", fmt_tc_pct(tc_sc["mp_reply_pct"]))
-row2[1].metric("CRR (Response Rate)", fmt_pct(sc["crr_pct"]))
-row2[2].metric("CRT (Response Time)", fmt_min(sc["crt_min"]))
-row2[3].metric("CSAT", fmt_pct(sc["csat_pct"]) if not df["csat_pct"].dropna().empty else "N/A")
+row2[0].metric("TC Reply %", fmt_tc_pct(tc_sc["tc_reply_pct"]))
+row2[1].metric("MP Reply %", fmt_tc_pct(tc_sc["mp_reply_pct"]))
+row2[2].metric("CRR (Response Rate)", fmt_pct(sc["crr_pct"]))
+row2[3].metric("CRT (Response Time)", fmt_min(sc["crt_min"]))
+
+row3 = st.columns(4)
+row3[0].metric("CSAT", fmt_pct(sc["csat_pct"]) if not df["csat_pct"].dropna().empty else "N/A")
 
 if tc_data_loaded:
     st.caption(
